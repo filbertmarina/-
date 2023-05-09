@@ -29,7 +29,7 @@ void finderr(double* mas_old, double* mas, double* outMatrix, size_t size)
 	
 }
 
-int find_threads(size){
+int find_threads(int size){
 	if (size%32==0){
 		t=1024;
 		b=size/1024;
