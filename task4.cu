@@ -108,7 +108,9 @@ int main(int argc, char** argv) {
 	// Allocate temporary storage
 	cudaMalloc(&tempStorage, tempStorageSize);
 	
-
+	bool graphCreated=false;
+	cudaGraph_t graph;
+	cudaGraphExec_t instance;
 
 		while ((err > err_max) && iter < iter_max) {
 			iter += 1;
@@ -116,24 +118,31 @@ int main(int argc, char** argv) {
 			int b,t = find_threads(SIZE);
 
 			countnewmatrix <<<b, t>>> (mas_old_dev, mas_dev, SIZE);
+			 if(!graphCreated){
+    				cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+				if (iter % 100 == 0 && iter !=1)
+				{
+					finderr <<<b, t>>> (mas_old_dev, mas_dev, errorMatrix, SIZE);
 
-			if (iter % 100 == 0 && iter !=1)
-			{
-				finderr <<<b, t>>> (mas_old_dev, mas_dev, errorMatrix, SIZE);
+					cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE*SIZE);
+					cudaMemcpy(&err, deviceError, sizeof(double), cudaMemcpyDeviceToHost);
 
-				cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE*SIZE);
-				cudaMemcpy(&err, deviceError, sizeof(double), cudaMemcpyDeviceToHost);
+					double t = (double)(clock() - start) / CLOCKS_PER_SEC;
+					printf(" time: %lf\n", t);
+					printf("%d  %lf", iter, err);
+					printf("\n");
 
-				double t = (double)(clock() - start) / CLOCKS_PER_SEC;
-				printf(" time: %lf\n", t);
-				printf("%d  %lf", iter, err);
-				printf("\n");
+				}
+					double* m = mas_dev;
+					mas_dev = mas_old_dev;
+					mas_old_dev = m;
+				cudaStreamEndCapture(stream, &graph);
+				cudaGraphInstantiate(&instance, graph, NULL, NULL, 0);
+				graphCreated=true;
 
 			}
-				double* m = mas_dev;
-				mas_dev = mas_old_dev;
-				mas_old_dev = m;
-			
+			cudaGraphLaunch(instance, stream);
+  			cudaStreamSynchronize(stream);
 		}
 
 	cudaFree(mas_old_dev);
