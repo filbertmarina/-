@@ -12,8 +12,8 @@ void countnewmatrix(double* mas_old, double* mas, size_t size)
 {
 	size_t i = blockIdx.x;
 	size_t j = threadIdx.x;
-	
-	assert(i<size&&j<size);
+
+	assert(i * size + j > size * size);
 	if (!(blockIdx.x == 0 || threadIdx.x == 0))
 		mas[i * size + j] = 0.25 * (mas_old[i * size + j - 1] + mas_old[(i - 1) * size + j] + mas_old[(i + 1) * size + j] + mas_old[i * size + j + 1]);
 	
@@ -23,7 +23,7 @@ void finderr(double* mas_old, double* mas, double* outMatrix, size_t size)
 {
 	size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-	assert(i<size&&j<size);
+	assert(i * size + j > size * size);
 	if (!(blockIdx.x == 0 || threadIdx.x == 0))
 		outMatrix[idx] = fabs(mas[idx] - mas_old[idx]);
 	
