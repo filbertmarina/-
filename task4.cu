@@ -31,15 +31,17 @@ void finderr(double* mas_old, double* mas, double* outMatrix, size_t size)
 
 int find_threads(int size){
 	if (size%32==0){
-		t=1024;
-		b=size/1024;
+		return size/1024, 1024;
+		//t=1024;
+		//b=size/1024;
 	}
 	else{
-		t=1024;
-		b=int(size/1024)+1;
+		return int(size/1024)+1, 1024;
+		//t=1024;
+		//b=int(size/1024)+1;
 	}
 
-	return b,t;
+	//return b,t;
 }
 
 
