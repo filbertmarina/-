@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <iostream>
 #include <math.h>
 #include <stdlib.h>
 #include <time.h>
@@ -22,29 +23,19 @@ __global__
 void finderr(double* mas_old, double* mas, double* outMatrix, size_t size)
 {
 	size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-	assert(i * size + j > size * size);
+	assert(idx > size * size);
 	if (!(blockIdx.x == 0 || threadIdx.x == 0))
 		outMatrix[idx] = fabs(mas[idx] - mas_old[idx]);
 	
 }
 
 int find_threads(int size){
-	if (size%32==0){
-		return size/1024, 1024;
-		//t=1024;
-		//b=size/1024;
-	}
-	else{
-		return int(size/1024)+1, 1024;
-		//t=1024;
-		//b=int(size/1024)+1;
-	}
+	if (size%32==0)
+		return size/1024;
 
-	//return b,t;
+	return int(size/1024)+1;
+
 }
-
-
 
 
 int main(int argc, char** argv) {
@@ -61,8 +52,11 @@ int main(int argc, char** argv) {
 	start = clock();
 
 
-	double* mas = (double*)calloc(SIZE * SIZE, sizeof(double));
-	double* mas_old = (double*)calloc(SIZE * SIZE, sizeof(double));
+	double* mas ;
+	double* mas_old;
+	cudaMallocHost(&mas, SIZE*SIZE * sizeof(double));
+	cudaMallocHost(&mas_old, SIZE*SIZE * sizeof(double));
+	
 
 	mas[0] = 10;
 	mas[SIZE - 1] = 20;
@@ -82,7 +76,8 @@ int main(int argc, char** argv) {
 
 
 	int iter = 0;
-	double err = 1.0;
+	double *err;
+	*err = 1.0;
 
 
 	for (int i = 0; i < SIZE * SIZE; i++) 
@@ -91,74 +86,89 @@ int main(int argc, char** argv) {
 
 	
 
-
+	printf("start");
 	cudaSetDevice(3);
 
 	double* mas_old_dev, * mas_dev, * deviceError, * errorMatrix, * tempStorage = NULL; //Device-accessible allocation of temporary storage
 	size_t tempStorageSize = 0;
 
-	cudaMalloc((void**)(&mas_old_dev), sizeof(double) * SIZE*SIZE);
-	cudaMalloc((void**)(&mas_dev), sizeof(double) * SIZE*SIZE);
+	cudaError_t cudaStatus_1 = cudaMalloc((void**)(&mas_old_dev), sizeof(double) * SIZE*SIZE);
+	cudaError_t cudaStatus_2 = cudaMalloc((void**)(&mas_dev), sizeof(double) * SIZE*SIZE);
 	cudaMalloc((void**)&deviceError, sizeof(double));
-	cudaMalloc((void**)&errorMatrix, sizeof(double) * SIZE*SIZE);
+	cudaError_t cudaStatus_3 = cudaMalloc((void**)&errorMatrix, sizeof(double) * SIZE*SIZE);
+	if (cudaStatus_1 != 0 || cudaStatus_2 != 0 || cudaStatus_3 != 0)
+	{
+		std::cout << "error" << std::endl;
+		return -1;
+	}
+	
 
-	cudaMemcpy(mas_old_dev, mas_old, sizeof(double) * SIZE*SIZE, cudaMemcpyHostToDevice);
-	cudaMemcpy(mas_dev, mas, sizeof(double) * SIZE*SIZE, cudaMemcpyHostToDevice);
+
+	cudaStatus_1  = cudaMemcpy(mas_old_dev, mas_old, sizeof(double) * SIZE*SIZE, cudaMemcpyHostToDevice);
+	cudaStatus_2  = cudaMemcpy(mas_dev, mas, sizeof(double) * SIZE*SIZE, cudaMemcpyHostToDevice);
+	if (cudaStatus_1 != 0 || cudaStatus_2 != 0 )
+	{
+		std::cout << "error" << std::endl;
+		return -1;
+	}
 
 	// Determine temporary device storage requirements
 	cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE * SIZE);
 	// Allocate temporary storage
 	cudaMalloc(&tempStorage, tempStorageSize);
 	
-	bool graphCreated=false;
+	bool graphCreated = false;
+	cudaStream_t stream, memoryStream;
+	cudaStreamCreate(&stream);
+	cudaStreamCreate(&memoryStream);
 	cudaGraph_t graph;
 	cudaGraphExec_t instance;
+	int t= 1024;
+	int b = find_threads(SIZE);
 
-		while ((err > err_max) && iter < iter_max) {
-			iter += 1;
+		while ((*err > err_max) && iter < iter_max) {
 
-			int b,t = find_threads(SIZE);
-
-			countnewmatrix <<<b, t>>> (mas_old_dev, mas_dev, SIZE);
 			 if(!graphCreated){
     				cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
-				if (iter % 100 == 0 && iter !=1)
-				{
-					finderr <<<b, t>>> (mas_old_dev, mas_dev, errorMatrix, SIZE);
+				for(size_t i = 0; i <50; i++){
+					countnewmatrix <<<b, t, 0, stream>>> (mas_old_dev, mas_dev, SIZE);
+					countnewmatrix <<<b, t, 0, stream>>> (mas_dev, mas_old_dev, SIZE);		
+		}
+				finderr <<<b, t, 0 , stream>>> (mas_old_dev, mas_dev, errorMatrix, SIZE);
 
-					cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE*SIZE);
-					cudaMemcpy(&err, deviceError, sizeof(double), cudaMemcpyDeviceToHost);
-
-					double t = (double)(clock() - start) / CLOCKS_PER_SEC;
-					printf(" time: %lf\n", t);
-					printf("%d  %lf", iter, err);
-					printf("\n");
-
-				}
-					double* m = mas_dev;
-					mas_dev = mas_old_dev;
-					mas_old_dev = m;
+				cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE*SIZE, stream);
+	
+				
 				cudaStreamEndCapture(stream, &graph);
 				cudaGraphInstantiate(&instance, graph, NULL, NULL, 0);
 				graphCreated=true;
 
 			}
-			cudaGraphLaunch(instance, stream);
-  			cudaStreamSynchronize(stream);
+			else{
+				cudaGraphLaunch(instance, stream);
+				cudaMemcpyAsync(err, deviceError, sizeof(double), cudaMemcpyDeviceToHost, stream);
+				cudaStreamSynchronize(stream);
+				iter += 100;
+				double ti = (double)(clock() - start) / CLOCKS_PER_SEC;
+					printf(" time: %lf\n", ti);
+					printf("%d  %lf", iter, &err);
+					printf("\n");
+
+				
+			}
 		}
 
 	cudaFree(mas_old_dev);
 	cudaFree(mas_dev);
 	cudaFree(errorMatrix);
 	cudaFree(tempStorage);
-	//for (int i = 0; i < SIZE * SIZE; i++)
+	
 	free(mas_old);
 
-	//for (int i = 0; i < SIZE*SIZE; i++)
 	free(mas);
 
-	double t = (double)(clock() - start) / CLOCKS_PER_SEC;
-	printf(" time: %lf\n", t);
-	return EXIT_SUCCESS;
+	double ti = (double)(clock() - start) / CLOCKS_PER_SEC;
+	printf(" time: %lf\n", ti);
+	return 0;
 
 }
