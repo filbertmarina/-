@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
 	}
 
 	// Determine temporary device storage requirements
-	cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE * SIZE);
+	cub::DeviceReduce::Max(tempStorage, tempStorageSize, errorMatrix, deviceError, SIZE * SIZE, stream);
 	// Allocate temporary storage
 	cudaMalloc(&tempStorage, tempStorageSize);
 	
