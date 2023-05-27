@@ -1,238 +1,226 @@
 #include <stdio.h>
 #include <iostream>
-#include <math.h>
-#include <stdlib.h>
-#include <time.h>
+#include <cmath>
+#include <ctime>
+#include <string>
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
-#include <cuda.h>
+#include <iomanip>
+#include "mpi.h"
 
-#include <mpi.h>
 
 
-__global__
-void countnewmatrix(double* mas_old, double* mas, size_t size, size_t sizePerGpu)
+__global__ void calculationMatrix(double* new_arry, const double* old_array, size_t size, size_t groupSize)
 {
-	size_t j = blockIdx.x * blockDim.x + threadIdx.x;
-    	size_t i = blockIdx.y * blockDim.y + threadIdx.y;
-	
-	if (!(blockIdx.x == 0 || threadIdx.x == 0 || i == sizePerGpu - 1))
-		mas[i * size + j] = 0.25 * (mas_old[i * size + j - 1] + mas_old[(i - 1) * size + j] + mas_old[(i + 1) * size + j] + mas_old[i * size + j + 1]);
-
+    unsigned int j = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int i = blockIdx.y * blockDim.y + threadIdx.y;
+    //printf("%d", size);
+    if (i > 0 && i < groupSize - 1 && j > 0 && j < size - 1)
+    {
+        new_arry[i * size + j] = 0.25 * (old_array[i * size + j - 1] + old_array[(i - 1) * size + j] +
+            old_array[(i + 1) * size + j] + old_array[i * size + j + 1]);
+    }
 }
-__global__
-void finderr(double* mas_old, double* mas, double* outMatrix, size_t size)
+
+
+__global__ void getDifferenceMatrix(const double* new_arry, const double* old_array, double* dif)
 {
-	size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (!(blockIdx.x == 0 || threadIdx.x == 0))
-		outMatrix[idx] = fabs(mas[idx] - mas_old[idx]);
-
-}
-
-int find_threads(int size) {
-	if (size % 32 == 0)
-		return size / 1024;
-
-	return int(size / 1024) + 1;
-
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    dif[idx] = std::abs(old_array[idx] - new_arry[idx]);
 }
 
 
-int main(int argc, char** argv)
-{
-	int SIZE;
-	double err_max;
-	int iter_max;
-
-	SIZE = atoi(argv[2]);
-	err_max = atof(argv[1]);
-	iter_max = atoi(argv[3]);
 
 
-	clock_t start;
-	start = clock();
-	///////////////////////&
+int main(int argc, char** argv) {
 
-	
-//функция инициализации MPI, создаем группу в которой наход все процессы и создается область связи описываемая коммуникатором MPI_COMM_WORLD
-	MPI_Init(&argc, &argv);
-	int rank, sizeOfTheGroup;
+    int SIZE;
+    double err_max;
+    int iter_max;
 
-//delete 
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-//Функция определения числа процессов в области связи MPI_Comm_size
-	MPI_Comm_size(MPI_COMM_WORLD, &sizeOfTheGroup);
+    SIZE = atoi(argv[2]);
+    err_max = atof(argv[1]);
+    iter_max = atoi(argv[3]);
 
+    clock_t start;
+    start = clock();
 
-	cudaSetDevice(rank);
-//////
-	if (rank != 0)
-		cudaDeviceEnablePeerAccess(rank - 1, 0);
-	if (rank != sizeOfTheGroup - 1)
-		cudaDeviceEnablePeerAccess(rank + 1, 0);
-///////
+    int rank, sizeOfTheGroup;
+    MPI_Init(&argc, &argv);
+    //Функция возвращает номер процесса, вызвавшего эту функцию
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-	size_t sizeOfAreaForOneProcess = SIZE / sizeOfTheGroup;
-	size_t startYIdx = sizeOfAreaForOneProcess * rank;
+    // колво процессов в комуникаторе, запись в sizeOfTheGroup
+    MPI_Comm_size(MPI_COMM_WORLD, &sizeOfTheGroup);
 
 
-	// Расчитываем, сколько памяти требуется процессу
-	if (rank != 0 && rank != sizeOfTheGroup - 1)
-	{
-		sizeOfAreaForOneProcess += 2;
-	}
-	else
-	{
-		sizeOfAreaForOneProcess += 1;
-	}
+    cudaSetDevice(rank);
 
-	size_t sizeOfAllocatedMemory = SIZE * sizeOfAreaForOneProcess;
+    if (rank != 0)
+        cudaDeviceEnablePeerAccess(rank - 1, 0);
+    if (rank != sizeOfTheGroup - 1)
+        cudaDeviceEnablePeerAccess(rank + 1, 0);
 
-/////////
+    size_t sizeOfAreaForOneProcess = SIZE / sizeOfTheGroup;
+    size_t startYIdx = sizeOfAreaForOneProcess * rank;
 
+ 
+    double* mas, * mas_old;
+    cudaMallocHost(&mas, sizeof(double) * SIZE * SIZE);
+    cudaMallocHost(&mas_old, sizeof(double) * SIZE * SIZE);
 
-	////////////////////
-	double* mas;
-	double* mas_old;
-	cudaMallocHost(&mas, SIZE * SIZE * sizeof(double));
-	cudaMallocHost(&mas_old, SIZE * SIZE * sizeof(double));
+    std::memset(mas_old, 0, SIZE * SIZE * sizeof(double));
 
 
-	mas[0] = 10;
-	mas[SIZE - 1] = 20;
-	mas[(SIZE) * (SIZE - 1)] = 20;
-	mas[(SIZE) * (SIZE)-1] = 30;
+    mas[0] = 10;
+    mas[SIZE - 1] = 20;
+    mas[(SIZE) * (SIZE - 1)] = 20;
+    mas[(SIZE) * (SIZE)-1] = 30;
 
 
 
-	for (int i = 1; i < SIZE - 1; i++)
-		mas[i] = mas[i - 1] + (mas[SIZE - 1] - mas[0]) / SIZE;
+    for (int i = 1; i < SIZE - 1; i++)
+        mas[i] = mas[i - 1] + (mas[SIZE - 1] - mas[0]) / SIZE;
 
-	for (int i = 1; i < SIZE - 1; i++) {
-		mas[SIZE * (SIZE - 1) + i] = mas[SIZE * (SIZE - 1) + i - 1] + (mas[(SIZE) * (SIZE)-1] - mas[(SIZE) * (SIZE - 1)]) / SIZE;
-		mas[(SIZE) * (i)] = mas[(i - 1) * (SIZE)] + (mas[(SIZE) * (SIZE - 1)] - mas[0]) / SIZE;
-		mas[(SIZE) * (i)+(SIZE - 1)] = mas[(SIZE) * (i - 1) + (SIZE - 1)] + (mas[(SIZE) * (SIZE)-1] - mas[SIZE - 1]) / SIZE;
-	}
-
-
-	for (int i = 0; i < SIZE * SIZE; i++)
-		mas_old[i] = mas[i];
+    for (int i = 1; i < SIZE - 1; i++) {
+        mas[SIZE * (SIZE - 1) + i] = mas[SIZE * (SIZE - 1) + i - 1] + (mas[(SIZE) * (SIZE)-1] - mas[(SIZE) * (SIZE - 1)]) / SIZE;
+        mas[(SIZE) * (i)] = mas[(i - 1) * (SIZE)] + (mas[(SIZE) * (SIZE - 1)] - mas[0]) / SIZE;
+        mas[(SIZE) * (i)+(SIZE - 1)] = mas[(SIZE) * (i - 1) + (SIZE - 1)] + (mas[(SIZE) * (SIZE)-1] - mas[SIZE - 1]) / SIZE;
+    }
 
 
+    for (int i = 0; i < SIZE * SIZE; i++)
+        mas_old[i] = mas[i];    
 
 
 
-
-	double* mas_old_dev, * mas_dev, * deviceError, * errorMatrix, * tempStorage = NULL; //Device-accessible allocation of temporary storage
-
-
-	////////////////////////////&
-	unsigned int threads_x = (SIZE < 1024) ? SIZE : 1024;       // кол-во потоков в блоке 
-	unsigned int blocks_y = sizeOfAreaForOneProcess;            // кол-во блоков по y в сетке 
-	unsigned int blocks_x = SIZE / threads_x;              //кол-во блоков по x
-
-	dim3 blockDim(threads_x, 1);//кол-во потоков в блоке 
-	dim3 gridDim(blocks_x, blocks_y);//размер сетки 
-	/////////////////////////////////////////
-
-		// Выделяем память на девайсе
-	cudaError_t cudaStatus_1 = cudaMalloc((void**)(&mas_old_dev), sizeof(double) * SIZE * SIZE);
-	cudaError_t cudaStatus_2 = cudaMalloc((void**)(&mas_dev), sizeof(double) * SIZE * SIZE);
-	cudaMalloc((void**)&deviceError, sizeof(double));
-	cudaError_t cudaStatus_3 = cudaMalloc((void**)&errorMatrix, sizeof(double) * SIZE * SIZE);
-	if (cudaStatus_1 != 0 || cudaStatus_2 != 0 || cudaStatus_3 != 0)
-	{
-		std::cout << "error" << std::endl;
-		return -1;
-	}
-
-	////////////////////////&
-		// Копируем часть заполненной матрицы в выделенную память, начиная с 1 строки
-	size_t offset = (rank != 0) ? SIZE : 0;
-	cudaMemset(mas_old_dev, 0, sizeof(double) * sizeOfAllocatedMemory);
-	cudaMemset(mas_dev, 0, sizeof(double) * sizeOfAllocatedMemory);
-	cudaMemcpy(mas_old_dev, mas_old + (startYIdx * SIZE) - offset, sizeof(double) * sizeOfAllocatedMemory, cudaMemcpyHostToDevice);
-	cudaMemcpy(mas_dev, mas + (startYIdx * SIZE) - offset, sizeof(double) * sizeOfAllocatedMemory, cudaMemcpyHostToDevice);
-
-	//////////////////
-
-	size_t tempsize=0;
-	// Determine temporary device storage requirements
-	cub::DeviceReduce::Max(tempStorage, tempsize, errorMatrix, deviceError, SIZE * SIZE);
-	// Allocate temporary storage
-	cudaMalloc(&tempStorage, 0);
-
-	int iter = 0;
-	double* err;
-	cudaMallocHost(&err, sizeof(double));
-	*err = 1.0;
-
-	cudaStream_t stream, memoryStream;
-	cudaStreamCreate(&stream);
-	cudaStreamCreate(&memoryStream);
+    int iter_count = 0; 
+    double* error;
+    cudaMallocHost(&error, sizeof(double));
+    *error = 1.0;
 
 
-	while ((iter < iter_max) && (*err) > err_max)
-	{
-		iter++;
+
+    if (rank != 0 && rank != sizeOfTheGroup - 1)
+    {
+        sizeOfAreaForOneProcess += 2;
+    }
+    else
+    {
+        sizeOfAreaForOneProcess += 1;
+    }
+
+    size_t sizeOfAllocatedMemory = SIZE * sizeOfAreaForOneProcess;
+
+    //выделяем память на gpu 
+    double* d_mas, * d_mas_old, * d_dif;
+    cudaMalloc((void**)&d_mas_old, sizeof(double) * sizeOfAllocatedMemory);
+    cudaMalloc((void**)&d_mas, sizeof(double) * sizeOfAllocatedMemory);
+    cudaMalloc((void**)&d_dif, sizeof(double) * sizeOfAllocatedMemory);
 
 
-		countnewmatrix <<<gridDim, blockDim, 0, stream >>> (mas_old_dev, mas_dev, SIZE, sizeOfAreaForOneProcess);
+
+    /// ///////////////////////
+    unsigned int threads_x = (SIZE < 1024) ? SIZE : 1024;// кол-во потоков 
+    unsigned int blocks_y = sizeOfAreaForOneProcess;// колво блоков 
+    unsigned int blocks_x = SIZE / threads_x;
+
+    dim3 blockDim1(threads_x, 1);//- размеры одного блока в потоках
+    dim3 gridDim1(blocks_x, blocks_y);//размер сетки в блоках
+    /// ////////////////////////////////
 
 
-		if (iter % 100 == 0)
-		{
-			finderr <<<blocks_x * blocks_y, threads_x, 0, stream >>> (mas_old_dev, mas_dev, errorMatrix, SIZE);
-			cub::DeviceReduce::Max(tempStorage, tempsize, errorMatrix, deviceError, sizeOfAllocatedMemory);
+    size_t offset = (rank != 0) ? SIZE : 0;
 
-			cudaStreamSynchronize(stream);
+    cudaMemset(d_mas_old, 0, sizeof(double) * sizeOfAllocatedMemory);
+    cudaMemset(d_mas, 0, sizeof(double) * sizeOfAllocatedMemory);
 
-				((void*)deviceError, (void*)deviceError, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);//
+    // CPU to GPU
+    cudaMemcpy(d_mas_old, mas_old + (startYIdx * SIZE) - offset, sizeof(double) * sizeOfAllocatedMemory, cudaMemcpyHostToDevice); // (CPU) mas_old -> (GPU) d_mas_old
+    cudaMemcpy(d_mas, mas + (startYIdx * SIZE) - offset, sizeof(double) * sizeOfAllocatedMemory, cudaMemcpyHostToDevice); // (CPU) mas -> (GPU) d_mas
 
-			cudaMemcpyAsync(err, deviceError, sizeof(double), cudaMemcpyDeviceToHost, stream);
-		}
-
-		//Waits for stream tasks to complete.
-		cudaStreamSynchronize(stream);
-
-		// Обмен "граничными" условиями каждой области
-		// Обмен верхней границей
-		if (rank != 0)
-		{
-			MPI_Sendrecv(mas_dev + SIZE + 1, SIZE - 2, MPI_DOUBLE, rank - 1, 0, mas_dev + 1, SIZE - 2, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		}
-		// Обмен нижней границей
-		if (rank != sizeOfTheGroup - 1)
-		{
-			MPI_Sendrecv(mas_dev + (sizeOfAreaForOneProcess - 2) * SIZE + 1,
-				SIZE - 2, MPI_DOUBLE, rank + 1, 0,
-				mas_dev + (sizeOfAreaForOneProcess - 1) * SIZE + 1,
-				SIZE - 2, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		}
-
-		double* m = mas;
-		mas = mas_old;
-		mas_old = m;
-	}
-
-	clock_t end = clock();
-	if (rank == 0)
-	{
-		printf("%d %lf", (end-start)/ CLOCKS_PER_SEC, &err);
-	}
+  
+    double* max_error = 0;
+    cudaMalloc((void**)&max_error, sizeof(double));
 
 
-	// Высвобождение памяти
-	cudaFree(mas_old_dev);
-	cudaFree(mas_dev);
-	cudaFree(errorMatrix);
-	cudaFree(tempStorage);
-	cudaFree(mas_old);
-	cudaFree(mas);
 
-//Функция закрывает все MPI-процессы и ликвидирует все области связи
-	MPI_Finalize();
 
-	return 0;
+    size_t temp_storage_bytes = 0;
+    double* temp_storage = NULL;
+    //получаем размер временного буфера для редукции
+    cub::DeviceReduce::Max(temp_storage, temp_storage_bytes, d_dif, max_error, sizeOfAllocatedMemory);
+    //выделяем память для буфера
+    cudaMalloc((void**)&temp_storage, temp_storage_bytes);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+
+ 
+
+   
+    while (iter_count < iter_max && (*error) > err_max) {
+        iter_count += 1;
+        // расчет матрицы
+        calculationMatrix <<<gridDim1, blockDim1, 0, stream >>> (d_mas, d_mas_old, SIZE, sizeOfAreaForOneProcess);
+
+     
+        if (iter_count % 100 == 0) {
+
+            getDifferenceMatrix <<<gridDim1, blockDim1, 0, stream >>> (d_mas, d_mas_old, d_dif);
+            cub::DeviceReduce::Max(temp_storage, temp_storage_bytes, d_dif, max_error, sizeOfAllocatedMemory); // нахождение максимума в разнице матрицы
+
+            cudaStreamSynchronize(stream);
+
+            //Объединяет значения из всех процессов и распределяет результат обратно во все процессы.
+            MPI_Allreduce((void*)max_error, (void*)max_error, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+
+            cudaMemcpyAsync(error, max_error, sizeof(double), cudaMemcpyDeviceToHost, stream); // запись ошибки в переменную на host
+            // Находим максимальную ошибку среди всех и передаём её всем процессам
+
+        }
+        cudaStreamSynchronize(stream);
+
+
+        // Обмен "граничными" условиями каждой области
+    // Обмен верхней границей
+        if (rank != 0)
+        {
+            MPI_Sendrecv(d_mas + SIZE + 1, SIZE - 2, MPI_DOUBLE, rank - 1, 0, d_mas + 1, SIZE - 2, MPI_DOUBLE, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+
+        // Обмен нижней границей
+        if (rank != sizeOfTheGroup - 1)
+        {
+            MPI_Sendrecv(d_mas + (sizeOfAreaForOneProcess - 2) * SIZE + 1,
+                SIZE - 2, MPI_DOUBLE, rank + 1, 0,
+                d_mas + (sizeOfAreaForOneProcess - 1) * SIZE + 1,
+                SIZE - 2, MPI_DOUBLE, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+
+        double* c = d_mas_old;
+        d_mas_old = d_mas;
+        d_mas = c;
+    }
+
+    clock_t end = clock();
+    if (rank == 0)
+    {
+        printf("%d %lf", (end - start) / CLOCKS_PER_SEC, &err);
+    }
+
+    //очитска памяти
+    cudaFree(d_mas_old);
+    cudaFree(d_mas);
+    cudaFree(temp_storage);
+    cudaFree(mas_old);
+    cudaFree(mas);
+    cudaFree(max_error);
+
+    //Функция закрывает все MPI-процессы и ликвидирует все области связи
+    MPI_Finalize();
+        
+    return 0;
 }
+
